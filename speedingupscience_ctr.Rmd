@@ -1,0 +1,221 @@
+---
+title: "SpeedingUpScience:RareTaxaProportion"
+author: "Alexandria igwe"
+date: "10/25/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+#Load libraries
+```{r}
+library(lubridate) #used to change the data type of the metadata from Factor to Date
+library(vegan)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+library(viridis) #for ggplot2 colors
+```
+#phyloseq
+##load data
+```{r, include=FALSE}
+#loading data for phyloseq object
+otu <- read.csv("its2-otu-table-NdV.csv", row.names=1)
+
+meta <- read.csv("metadata.csv", header=TRUE, na.strings=c("", "NA"))
+meta<-na.omit(meta)
+rownames(meta)<-meta[,1]
+
+tax <- read.csv("its2-family.csv", header=T, as.is=TRUE)
+rownames(tax)<-tax[,1]
+```
+##Create phyloseq object
+```{r otu table}
+library(phyloseq)
+OTU = otu_table(otu, taxa_are_rows=FALSE)
+taxa_names(OTU)
+
+tax <- as.matrix(tax)
+TAX = tax_table(tax)
+taxa_names(TAX)
+
+META <- sample_data(meta)
+
+ps = phyloseq(OTU, META, TAX)
+ps
+```
+```{r}
+colnames(tax_table(ps))
+#colnames(tax_table(ps)) <- c("Taxa", "Family") #can be used to change names if column names are not correct
+colnames(tax_table(ps))
+```
+##Abundance
+```{r}
+ps.family <- ps %>%
+  tax_glom(taxrank = "Family") %>%                    
+  psmelt() %>%                                         
+  filter(Abundance > 0.02) %>%                        
+  arrange(Family) 
+
+dim(ps.family)
+```
+##table of abundances
+```{r}
+ps.family_table <- ps.family %>% group_by(Timepoint) %>% dplyr::summarise(mean(Abundance, na.rm = TRUE))
+ps.family_table
+```
+##bar graph of abundances
+```{r}
+ps.family_bar<-ggplot(ps.family, aes(x = Timepoint, y = Abundance, fill = Taxa)) +
+  theme_bw() +
+  scale_fill_viridis(discrete=TRUE) +
+  geom_bar(stat="identity", position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  ylab ("Relateve Abundance (Phyla > 2%)") + ggtitle("Relative Abundance of Taxa")
+
+ps.family_bar
+```
+##ordination and nmds
+```{r}
+#ordination for plot_ordination in phyloseq
+ord.nmds.bray.ps <- ordinate(ps, method="NMDS", distance="bray")
+ord.nmds.bray.ps
+
+#visualization of relationship
+ord.nmds.bray.ps.plot <- plot_ordination(ps, ord.nmds.bray.ps, color="Timepoint") + 
+  theme_bw() + theme(text = element_text(size=20), legend.title=element_blank()) + geom_point(size=5) +
+  theme(legend.text = element_text(size = 20)) +
+  labs(title="NMDS of Bray-Curtis Dissimilarity")
+ord.nmds.bray.ps.plot + scale_color_viridis(discrete=FALSE)
+
+#stats
+serpnon.field.bray <- phyloseq::distance(ps, method="bray")
+serpnon.field.bray
+sampledf.field <- data.frame(sample_data(ps))
+adonis.field.bray <- adonis(serpnon.field.bray ~ Timepoint, data = sampledf.field)
+adonis.field.bray
+
+#betadisper tests for homogeneity of variance. if significant, this means differences may be due to group rather than treatments
+beta.field.bray <- betadisper(serpnon.field.bray, sampledf.field$Timepoint, type="centroid")
+permutest(beta.field.bray)
+plot(beta.field.bray)
+TukeyHSD(beta.field.bray)
+```
+##Conditionally Rare Taxa
+```{r}
+#if conducntion time series, column names should be date. run each treatment separately or as date.trt
+#https://astrostatistics.psu.edu/su07/R/html/base/html/Extract.data.frame.html
+OTUdf <- as.data.frame(t(OTU))
+class(OTUdf)
+write.table(OTUdf, "its2-otu-table-NdV_cr.txt",col.names = NA, sep = "\t")
+test <- read.table("its2-otu-table-NdV_cr.txt")
+
+#number rows starting at the second row until the nth observation. use row names starting at the first row to the (n-1)th observation
+#test[2:nth,]$V1 <- as.numeric(row.names(test[1:(n-1)th,]))
+
+test[2:68,]$V1 <- as.numeric(row.names(test[1:67,]))
+test$V1<-as.numeric(as.character(test$V1))
+test[2:68,]$V1 <- as.numeric(row.names(test[1:67,]))
+str(test)
+
+#open in excel. delete row 1. delete column A. delete content of first cell. make sure values are integers.
+write.table(test, "its2-otu-table-NdV_cr_excel.txt", sep = "\t")
+```
+###SimpletoRare
+```{r}
+#This is an analysis script for detecting conditionally rare taxa in a temporal microbial community dataset.  
+#Written by A. Shade 30 May 2013/02 Dec 2013, to accompany the manuscript: "Conditionally rare taxa disproportionately contribute to temporal changes in microbial diversity."  
+#This script comes with no warranty.
+#Questions?  shade.ashley@gmail.com
+
+#####
+#16 Oct 2014 bug fix.  ALS.  MaxRel filter was updated.  Also added option:  can discover of CRT based on MaxRel calculated from dataset with all OTUs OR dataset with only non-singleton OTUs.
+####
+
+#####
+#What does the script do?
+#This script will print the proportion of conditionally rare taxa detected in the dataset in the R console.  It will also output a file of the OTU IDs, and, if provided, the taxonomic assignments of those OTUs, for the conditionally rare taxa.
+
+#The script allows the user to define thresholds of the coefficient of bimodality (b_thresh, default = 0.90), and the relative abundance maximum (abund_thresh, default = 0.005). 
+
+
+#####
+#What are the input files?
+#The input file for this script is: An OTU (taxa) table, with samples in columns and taxa in rows.  The first row should include column names.  The first column should have taxa (OTU) IDs.  The first cell (row 1, col 1) should be empty.  It is optional that the last column contains taxonomic assignments of each OTU.
+ 
+#The L4 English Channel dataset is provided as an example of an input file.  Inspect the formatting of this file carefully and use it as a guide to prepare your own dataset for analysis.
+
+ 
+#####
+#How do I use the script? 
+#Step 1.
+#If they are not installed already, install the following required R packages: vegan, TSA.  Then, load the libraries to the R workspace by copying and pasting the commands below into the R console:
+library(vegan)
+library(TSA)
+
+#Step 2.
+#Place the input file and script in the same working directory to run this script.  Change the working directory in R to match where the files have been placed.
+
+#Step 3.
+#Load the necessary functions into your R workspace, contained in a separate file, "CRT_functions.R" 
+source("/Users/anigwe/Desktop/sus/pollen/CRT_Functions_v1.1.R")
+
+#Step 4.  
+#Change the options below to match your dataset.  The options are:  
+#otu_fp - type the the full name of your dataset file, including the extension
+#abund_thresh -  Change the maximum abundance threshold, if desired. Defaults to 0.005
+#abund_thresh_ALL - Use TRUE if you want to use the full dataset (ALL OTUs) to calculate relative abundances.  Use FALSE if you want to use the non-singleton (filtered) dataset to calculate relative abundances.  Default is FALSE.
+#b_thresh - Change the coefficient of bimodality threshold, if desired.  Defaults to 0.90
+#rdp_lastcol - Use TRUE if the last column of the dataset contains the taxonomic assignments of OTUs, use FALSE if not
+#Then,to run the script, copy and paste the command into the R console:
+
+
+cr.df<-SimpleRareToPrev.f(otu_fp="its2-otu-table-NdV_cr_input.txt",abund_thresh=0.005, abund_thresh_ALL=TRUE,b_thresh=0.90, rdp_lastcol=TRUE)
+
+#When the script is finished running, a new results file will appear in the directory, and the output will also appear in the R console.
+
+#Important note:  This script will write over previous results files in the same directory with the same name
+
+#Have fun!
+```
+```{r}
+otu<-read.table("its2-otu-table-NdV_cr_input.txt")
+rowSums(otu)
+tmp=otu[rowSums(otu)>0,]
+no.otus=nrow(tmp)
+otu.nosigs=tmp[rowSums(tmp)>1,]
+otu.nosigs
+
+df.con.rare <- data.frame("dataset" = "tara_timeseries",
+                            "rareOTU" = nrow(cr.df),
+                             "totalOTU" = nrow(tmp),
+                             "rareOTU_totalOTU_prop" = nrow(cr.df)/nrow(tmp),
+                             "nonsingleOTU" = nrow(otu.nosigs),
+                             "rare_nonsingleOTU_prop" =
+                            nrow(cr.df)/nrow(otu.nosigs))
+df.con.rare
+```
+```{r}
+#this code is used to creat an output of the CTR
+taxalist <- read.csv("/Users/anigwe/Desktop/sus/pollen/its2-family.csv", header=T, as.is=TRUE)
+taxalist$OTUID <- row.names(taxalist)
+rownames(taxalist)<-taxalist[,1]
+
+cr.df.taxa <- merge(cr.df, taxalist, by.x = "OTUID", by.y = "OTUID")
+cr.df.taxa
+```
+```{r}
+cr.df.taxa$MaxRel_All <- as.numeric(cr.df.taxa$MaxRel_All)
+
+cr.df.taxa_bar<-ggplot(cr.df.taxa, aes(x = OTUID, y = MaxRel_All)) +
+  theme_bw() +
+  geom_bar(stat="identity") +
+  scale_y_continuous() +
+  ylab ("Max Relative Abundance in %") + ggtitle("Max Relative Abundance of CTR")
+
+cr.df.taxa_bar
+```
+
+
+
